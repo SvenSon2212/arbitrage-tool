@@ -1,9 +1,12 @@
+
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 import time
 from datetime import datetime
+
+st.set_page_config(page_title="Arbitrage Radar", layout="wide")
 
 def calculate_arbitrage(odds_dict, total_stake=100):
     inv_odds = {result: 1/odd for result, odd in odds_dict.items()}
@@ -25,13 +28,12 @@ def calculate_arbitrage(odds_dict, total_stake=100):
         "total_inverse": inv_sum,
         "stakes": stakes,
         "payouts": payout,
-        "profit": profit
+        "profit": profit,
+        "max_profit": max(profit.values())
     }
 
 def scrape_odds_oddsportal(match_url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(match_url, headers=headers)
     soup = BeautifulSoup(response.content, 'html.parser')
 
@@ -73,24 +75,26 @@ def scrape_matches_from_league(league_url):
 
     return match_links
 
-st.title("📊 Europese Voetbal Arbitrage Tool")
+st.title("📊 Arbitrage Radar – Voetbalweddenschappen")
+st.markdown("Analyseer meerdere competities voor gegarandeerde winst.")
 
-st.markdown("Vul meerdere competitie-URL's in, gescheiden door een ENTER:")
-leagues_input = st.text_area("OddsPortal competitiepagina's", """
+with st.sidebar:
+    st.header("⚙️ Instellingen")
+    leagues_input = st.text_area("Voeg OddsPortal competitie-URL's toe (1 per regel):", """
 https://www.oddsportal.com/football/england/premier-league/
-https://www.oddsportal.com/football/spain/laliga/
-https://www.oddsportal.com/football/italy/serie-a/
 https://www.oddsportal.com/football/netherlands/eredivisie/
+https://www.oddsportal.com/football/spain/laliga/
 """)
+    total_stake = st.number_input("Totale inzet (€)", min_value=10, max_value=1000, value=100, step=10)
+    show_only_profitable = st.checkbox("🔍 Toon alleen arbitrage met winst", value=True)
+    min_profit = st.slider("📈 Minimale winst (€)", 0.0, 100.0, 1.0, 0.5)
 
-total_stake = st.number_input("Totale inzet (€)", min_value=10, max_value=1000, value=100, step=10)
-
-if st.button("Start dagelijkse arbitrage check"):
+if st.button("Start Arbitrage Analyse"):
     league_urls = [url.strip() for url in leagues_input.strip().splitlines() if url.strip()]
     all_output = []
 
     for league_url in league_urls:
-        st.subheader(f"🔍 Analyse van: {league_url}")
+        st.subheader(f"🔎 {league_url}")
         match_urls = scrape_matches_from_league(league_url)
         st.info(f"Gevonden {len(match_urls)} wedstrijden. Odds worden nu opgehaald...")
 
@@ -103,29 +107,37 @@ if st.button("Start dagelijkse arbitrage check"):
             if not odds:
                 continue
 
-            max_odds = {}
-            for result in ['Home', 'Draw', 'Away']:
-                max_odds[result] = max([book[result] for book in odds.values() if result in book], default=0)
-
+            max_odds = {r: max([book[r] for book in odds.values() if r in book], default=0) for r in ['Home', 'Draw', 'Away']}
             result = calculate_arbitrage(max_odds, total_stake=total_stake)
-            row = {"Competitie": league_url, "Wedstrijd URL": match_url, "Arbitrage?": result["arbitrage_possible"], "Total 1/Odds": round(result["total_inverse"], 4)}
-            if result["arbitrage_possible"]:
-                row.update({f"Inzet {k}": round(v, 2) for k, v in result["stakes"].items()})
-                row.update({f"Winst {k}": round(v, 2) for k, v in result["profit"].items()})
-            output.append(row)
+
+            if result["arbitrage_possible"] and result["max_profit"] >= min_profit:
+                row = {
+                    "Competitie": league_url,
+                    "Wedstrijd URL": match_url,
+                    "Arbitrage?": True,
+                    "Max winst (€)": round(result["max_profit"], 2),
+                    **{f"Inzet {k}": round(v, 2) for k, v in result["stakes"].items()},
+                    **{f"Winst {k}": round(v, 2) for k, v in result["profit"].items()},
+                    "Total 1/Odds": round(result["total_inverse"], 4),
+                    "🔖 Bookmark": f"[🔗 Open]({match_url})"
+                }
+                output.append(row)
 
             progress_bar.progress((i+1)/len(match_urls))
 
         df = pd.DataFrame(output)
         all_output.extend(output)
 
-        st.success(f"✅ Analyse van {league_url} voltooid")
-        st.dataframe(df)
+        if not df.empty:
+            df_sorted = df.sort_values(by="Max winst (€)", ascending=False)
+            st.dataframe(df_sorted.reset_index(drop=True), use_container_width=True)
+        else:
+            st.warning("Geen winstgevende arbitrage gevonden in deze competitie.")
 
     if all_output:
-        final_df = pd.DataFrame(all_output)
+        final_df = pd.DataFrame(all_output).sort_values(by="Max winst (€)", ascending=False)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         csv = final_df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download alle resultaten als CSV", csv, f"arbitrage_{timestamp}.csv", "text/csv")
     else:
-        st.warning("Geen bruikbare odds of arbitrage gevonden.")
+        st.info("Geen arbitrage gevonden die voldoet aan de filterinstellingen.")
